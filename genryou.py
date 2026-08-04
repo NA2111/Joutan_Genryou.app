@@ -5,7 +5,6 @@ import smtplib
 from email.header import Header
 from email.mime.text import MIMEText
 import urllib.request
-import urllib.parse
 import pandas as pd
 import streamlit as st
 
@@ -99,12 +98,12 @@ def load_data():
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         cols = [
             "タブ名", "品名", "在庫数", "発注点", "単位", "更新日時",
-            "保管場所", "安全区分", "SDSファイル", "ロット番号", "使用期限", "備考", "メッセージ"
+            "保管場所", "安全区分", "SDSファイル", "ロット番号", "使用期限", "検索タグ", "備考", "メッセージ"
         ]
         df = pd.DataFrame(
             [
-                ["樹脂・原料", "POM 白 φ30×1000", 2, 3, "本", now, "棚A-1", "指定なし 📦", "", "LOT-001", "2026-12-31", "メイン使用材", "残わずか"],
-                ["洗浄・化学品", "IPA (イソプロピルアルコール)", 1, 2, "缶", now, "危険物庫 B-1", "危険物 🔥", "", "CHM-992", "2024-05-01", "火気厳禁", "要発注"],
+                ["樹脂・原料", "POM 白 φ30×1000", 2, 3, "本", now, "棚A-1", "指定なし 📦", "", "LOT-001", "2026-12-31", "汎用樹脂, 試作", "メイン使用材", "残わずか"],
+                ["洗浄・化学品", "IPA (イソプロピルアルコール)", 1, 2, "缶", now, "危険物庫 B-1", "危険物 🔥", "", "CHM-992", "2024-05-01", "洗浄用, 溶剤", "火気厳禁", "要発注"],
             ],
             columns=cols,
         )
@@ -122,6 +121,9 @@ def load_data():
         needs_save = True
     if "使用期限" not in df.columns:
         df["使用期限"] = ""
+        needs_save = True
+    if "検索タグ" not in df.columns:
+        df["検索タグ"] = ""
         needs_save = True
 
     if needs_save:
@@ -179,7 +181,6 @@ def check_expiry(date_str):
 
 
 df = load_data()
-
 # 各行に期限ステータスを計算
 df["期限状態"] = df["使用期限"].apply(check_expiry)
 
@@ -201,7 +202,7 @@ out_of_stock = len(df[df["在庫数"] == 0])
 expired_items = len(df[df["期限状態"] == "❌ 期限切れ"])
 near_expiry_items = len(df[df["期限状態"].str.contains("⚠️", na=False)])
 
-# サマリーカードのデザイン
+# サマリーカード
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("📦 登録品目数", f"{total_items} 件")
 c2.metric("⚠️ 要発注・補充", f"{low_stock + out_of_stock} 件")
@@ -231,7 +232,7 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.header("🔍 検索 & フィルター")
 search_query = st.sidebar.text_input(
-    "検索キーワード", placeholder="品名・ロット番号・場所..."
+    "検索キーワード", placeholder="品名・タグ・ロット番号・場所..."
 )
 status_filter = st.sidebar.radio(
     "状態絞り込み", ["すべて", "⚠️ 要発注のみ", "📅 期限切れ/間近", "📄 添付ファイルあり"]
@@ -314,7 +315,7 @@ if st.sidebar.button("＋ カテゴリ追加"):
     if new_cat and new_cat not in df["タブ名"].unique():
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         new_row = pd.DataFrame(
-            [[new_cat, "サンプル原料", 1, 1, "個", now, "", "指定なし 📦", "", "LOT-000", "", "", "初期アイテム"]],
+            [[new_cat, "サンプル原料", 1, 1, "個", now, "", "指定なし 📦", "", "LOT-000", "", "", "", "初期アイテム"]],
             columns=df.columns[:-1], # 期限状態列を除外して追加
         )
         df = pd.concat([df.drop(columns=["期限状態"]), new_row], ignore_index=True)
@@ -353,10 +354,12 @@ for i, cat in enumerate(categories):
 
         filtered_df = cat_df.copy()
         if search_query:
+            # 検索ロジックに「検索タグ」も含める
             filtered_df = filtered_df[
                 filtered_df["品名"].astype(str).str.contains(search_query, case=False)
                 | filtered_df["ロット番号"].astype(str).str.contains(search_query, case=False)
                 | filtered_df["保管場所"].astype(str).str.contains(search_query, case=False)
+                | filtered_df["検索タグ"].astype(str).str.contains(search_query, case=False)
             ]
 
         if status_filter == "⚠️ 要発注のみ":
@@ -372,7 +375,7 @@ for i, cat in enumerate(categories):
         display_df = (filtered_df if not filtered_df.empty else cat_df).reset_index(drop=True)
 
         show_cols = [
-            "品名", "ロット番号", "在庫数", "単位", "期限状態", 
+            "品名", "検索タグ", "ロット番号", "在庫数", "単位", "期限状態", 
             "ステータス", "添付", "安全区分", "保管場所", "備考", "更新日時"
         ]
 
@@ -382,7 +385,6 @@ for i, cat in enumerate(categories):
         if select_key not in st.session_state and item_list:
             st.session_state[select_key] = item_list[0]
 
-        # ★ Streamlitの最新UIを使ったモダンなテーブル描画 (在庫数をプログレスバー化)
         event = st.dataframe(
             display_df[show_cols],
             use_container_width=True,
@@ -421,8 +423,8 @@ for i, cat in enumerate(categories):
             curr_row = cat_df[cat_df["品名"] == selected_item].iloc[0]
             sds_path = str(curr_row["SDSファイル"]).strip()
 
-            # ★ 操作パネルを3つの「タブ」に分割してスッキリ整理！
-            op_tab1, op_tab2, op_tab3 = st.tabs(["⚡ 入出庫クイック操作", "✏️ 情報・ファイル編集", "📱 QRコード表示・詳細"])
+            # ★ 操作パネルを2つの「タブ」にスッキリ整理
+            op_tab1, op_tab2 = st.tabs(["⚡ 入出庫クイック操作", "✏️ 詳細情報・編集"])
 
             # ----------------------------------------------------
             # タブ1: 入出庫操作
@@ -462,8 +464,21 @@ for i, cat in enumerate(categories):
             # タブ2: 情報編集・添付ファイル
             # ----------------------------------------------------
             with op_tab2:
+                # 添付ファイルのダウンロードボタンを編集画面の先頭に表示
+                if sds_path and os.path.exists(sds_path):
+                    with open(sds_path, "rb") as file:
+                        st.download_button(
+                            label=f"📄 登録済みの添付ファイル（SDS）をダウンロード",
+                            data=file, file_name=os.path.basename(sds_path), mime="application/octet-stream", use_container_width=True
+                        )
+                else:
+                    st.info("※ 現在この品目に添付ファイルは登録されていません。")
+
+                st.write("")
+
                 with st.form(f"edit_form_{cat}_{selected_item}"):
                     e_name = st.text_input("品名", value=curr_row["品名"])
+                    e_tags = st.text_input("🏷️ 検索用タグ (複数ある場合はカンマ区切りで入力)", value=curr_row["検索タグ"], placeholder="例: 汎用樹脂, 試作, 洗浄用")
 
                     ec1, ec2, ec3 = st.columns(3)
                     e_qty = ec1.number_input("在庫数", min_value=0, value=int(curr_row["在庫数"]), step=1)
@@ -479,11 +494,9 @@ for i, cat in enumerate(categories):
 
                     e_safe = st.selectbox("安全区分タグ", SAFETY_CATEGORIES, index=(SAFETY_CATEGORIES.index(curr_row["安全区分"]) if curr_row["安全区分"] in SAFETY_CATEGORIES else 0))
 
-                    st.markdown("**📄 SDS・添付ファイルの更新**")
-                    if sds_path and os.path.exists(sds_path):
-                        st.caption(f"現在の添付ファイル: `{os.path.basename(sds_path)}`")
+                    st.markdown("**📄 SDS・新しい添付ファイルの更新**")
                     uploaded_sds = st.file_uploader(
-                        "新しい添付ファイルを選択 (上書きされます)", type=["pdf", "png", "jpg", "jpeg", "xlsx"], key=f"file_edit_{selected_item}"
+                        "新しくファイルを添付する (※現在のファイルは上書きされます)", type=["pdf", "png", "jpg", "jpeg", "xlsx"], key=f"file_edit_{selected_item}"
                     )
 
                     e_loc = st.text_input("保管場所", value=curr_row["保管場所"])
@@ -502,6 +515,7 @@ for i, cat in enumerate(categories):
                                     final_sds_path = save_sds_file(uploaded_sds, new_name_clean)
 
                                 df.loc[idx[0], "品名"] = new_name_clean
+                                df.loc[idx[0], "検索タグ"] = e_tags.strip()
                                 df.loc[idx[0], "在庫数"] = int(e_qty)
                                 df.loc[idx[0], "発注点"] = int(e_min)
                                 df.loc[idx[0], "単位"] = e_unit.strip()
@@ -518,35 +532,13 @@ for i, cat in enumerate(categories):
                                 st.success(f"「{new_name_clean}」の情報を更新しました！")
                                 st.rerun()
 
-            # ----------------------------------------------------
-            # タブ3: QRコード & 詳細確認
-            # ----------------------------------------------------
-            with op_tab3:
-                sc1, sc2 = st.columns([1, 2])
-                with sc1:
-                    # 品名とロット番号を埋め込んだQRコードの自動生成
-                    qr_data = f"品名:{selected_item}\nロット:{curr_row['ロット番号']}\n期限:{curr_row['使用期限']}"
-                    qr_url = f"https://chart.googleapis.com/chart?chs=150x150&cht=qr&chl={urllib.parse.quote(qr_data)}"
-                    st.image(qr_url, caption="棚ラベル用QRコード")
-                
-                with sc2:
-                    st.markdown(f"**安全区分:** {curr_row['安全区分']}")
-                    st.markdown(f"**使用期限:** {curr_row['期限状態']} ({curr_row['使用期限']})")
-                    if sds_path and os.path.exists(sds_path):
-                        with open(sds_path, "rb") as file:
-                            st.download_button(
-                                label=f"📄 添付ファイル（SDS）をダウンロード",
-                                data=file, file_name=os.path.basename(sds_path), mime="application/octet-stream"
-                            )
-                    else:
-                        st.info("※ 添付ファイルはありません。")
-
-
         # ➕ 新規品目追加フォーム
         st.markdown("---")
         with st.expander(f"➕ 「{cat}」に新しい原料・薬品を登録"):
             with st.form(f"add_item_form_{cat}"):
                 f_name = st.text_input("品名 (例: イソプロピルアルコール)")
+                f_tags = st.text_input("🏷️ 検索タグ (複数ある場合はカンマ区切り)", placeholder="例: 洗浄用, 劇物, Aライン用")
+                
                 fc1, fc2, fc3 = st.columns(3)
                 f_qty = fc1.number_input("初期数量", min_value=0, value=1, step=1)
                 f_min = fc2.number_input("発注点 (最小在庫)", min_value=0, value=2, step=1)
@@ -575,7 +567,7 @@ for i, cat in enumerate(categories):
                                     cat, f_name.strip(), int(f_qty), int(f_min), f_unit, 
                                     datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), 
                                     f_loc.strip(), f_safe, saved_path, f_lot.strip(), 
-                                    f_exp.strftime("%Y-%m-%d") if f_exp else "", f_rem.strip(), ""
+                                    f_exp.strftime("%Y-%m-%d") if f_exp else "", f_tags.strip(), f_rem.strip(), ""
                                 ]],
                                 columns=df.columns[:-1], # 期限状態列を除く
                             )
