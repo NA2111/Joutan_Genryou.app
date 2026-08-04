@@ -23,7 +23,7 @@ CSV_FILE = "sds_inventory_tabs.csv"
 LOG_FILE = "sds_inventory_log.csv"
 MSG_FILE = "sds_global_message.txt"
 WEBHOOK_FILE = "sds_webhook_url.txt"
-SDS_DIR = "sds_files"  # ★ 添付ファイルの保存フォルダ
+SDS_DIR = "sds_files"  # 添付ファイルの保存フォルダ
 
 # 添付ファイル用フォルダの自動生成
 os.makedirs(SDS_DIR, exist_ok=True)
@@ -147,7 +147,6 @@ def load_data():
 
     df = pd.read_csv(CSV_FILE, encoding="utf-8").fillna("")
 
-    # 旧データ互換用列チェック
     if "SDSファイル" not in df.columns:
         df["SDSファイル"] = ""
         df.to_csv(CSV_FILE, index=False, encoding="utf-8")
@@ -411,7 +410,6 @@ for i, cat in enumerate(categories):
             else:
                 return "✅ 良好"
 
-        # ★ 添付ファイルの有無状態を作成（テーブル表示用）
         def get_has_file(row):
             path = str(row["SDSファイル"]).strip()
             return "📄 あり" if path and os.path.exists(path) else "-"
@@ -446,7 +444,7 @@ for i, cat in enumerate(categories):
             filtered_df = filtered_df[filtered_df["添付ファイル"] == "📄 あり"]
 
         st.subheader(f"「{cat}」の一覧")
-        st.caption("👇 表の行をタップ・クリックすると、その品目が選択されます")
+        st.caption("👇 表のチェックボックスまたは行を選択すると、下の操作対象が自動変更されます")
 
         display_df = (
             filtered_df if not filtered_df.empty else cat_df
@@ -457,7 +455,7 @@ for i, cat in enumerate(categories):
             "在庫数",
             "発注点",
             "単位",
-            "添付ファイル",  # ★ 一覧表示用の添付有無列
+            "添付ファイル",
             "安全区分",
             "保管場所",
             "備考",
@@ -466,60 +464,55 @@ for i, cat in enumerate(categories):
             "更新日時",
         ]
 
-        # ★ 行クリック/タップイベント対応テーブル
+        item_list = list(cat_df["品名"].unique())
+        select_key = f"select_box_{cat}"
+
+        # 初期値セット
+        if select_key not in st.session_state and item_list:
+            st.session_state[select_key] = item_list[0]
+
+        # 行選択機能つきテーブル描画
         event = st.dataframe(
             display_df[show_cols],
             use_container_width=True,
             hide_index=True,
-            on_select="rerun",  # タップ時に即再描画
-            selection_mode="single-row",  # 1行選択モード
+            on_select="rerun",
+            selection_mode="single-row",
             key=f"df_table_{cat}",
         )
 
-        item_list = list(cat_df["品名"].unique())
+        # ★ テーブルの選択状態を直接下のセレクトボックスキーに連動反映させる処理
+        selected_rows = (
+            event.selection.rows
+            if event and hasattr(event, "selection")
+            else []
+        )
+        if selected_rows:
+            clicked_idx = selected_rows[0]
+            if clicked_idx < len(display_df):
+                clicked_item = display_df.iloc[clicked_idx]["品名"]
+                if clicked_item in item_list:
+                    st.session_state[select_key] = clicked_item
+
+        st.markdown("---")
+        st.markdown("### ⚡ 現場クイック操作・SDS閲覧・編集")
 
         if item_list:
-            # タップされた行の品名を取得
-            session_key = f"selected_item_{cat}"
-            if session_key not in st.session_state:
-                st.session_state[session_key] = item_list[0]
+            # 万が一現在の選択状態が一覧にない場合の補正
+            if st.session_state[select_key] not in item_list:
+                st.session_state[select_key] = item_list[0]
 
-            # テーブル行がクリックされた場合の連動処理
-            selected_rows = (
-                event.selection.rows
-                if event and hasattr(event, "selection")
-                else []
-            )
-            if selected_rows:
-                clicked_idx = selected_rows[0]
-                if clicked_idx < len(display_df):
-                    clicked_item = display_df.iloc[clicked_idx]["品名"]
-                    if clicked_item in item_list:
-                        st.session_state[session_key] = clicked_item
-
-            st.markdown("---")
-            st.markdown("### ⚡ 現場クイック操作・SDS閲覧・編集")
-
-            # セレクトボックス（タップ選択と完全同期）
-            selected_index = (
-                item_list.index(st.session_state[session_key])
-                if st.session_state[session_key] in item_list
-                else 0
-            )
-
+            # 選択メニュー（表のクリックと完全同期）
             selected_item = st.selectbox(
-                "操作または編集する品目（表タップでも切り替わります）",
+                "操作または編集する品目（表の選択で即自動切り替え）",
                 item_list,
-                index=selected_index,
-                key=f"select_box_{cat}",
+                key=select_key,
             )
-            # 手動でセレクトボックスを変更した場合の同期
-            st.session_state[session_key] = selected_item
 
             curr_row = cat_df[cat_df["品名"] == selected_item].iloc[0]
             sds_path = str(curr_row["SDSファイル"]).strip()
 
-            # ★ 添付ファイル（SDS）開く・ダウンロードボタン
+            # 添付ファイル（SDS）開く・ダウンロードボタン
             if sds_path and os.path.exists(sds_path):
                 with open(sds_path, "rb") as file:
                     st.download_button(
@@ -594,7 +587,7 @@ for i, cat in enumerate(categories):
                 st.warning(f"「{selected_item}」を削除しました。")
                 st.rerun()
 
-            # ✏️ 編集フォーム (添付ファイル操作対応)
+            # ✏️ 編集フォーム
             with st.expander(
                 f"✏️ 「{selected_item}」の品名・SDS添付ファイル・情報を編集"
             ):
@@ -628,7 +621,6 @@ for i, cat in enumerate(categories):
                         ),
                     )
 
-                    # 📄 SDS・添付ファイル選択欄
                     st.markdown("**📄 SDS・添付ファイルの登録**")
                     if sds_path and os.path.exists(sds_path):
                         st.caption(
@@ -668,7 +660,6 @@ for i, cat in enumerate(categories):
                                     "%Y-%m-%d %H:%M"
                                 )
 
-                                # 添付ファイルの更新処理
                                 final_sds_path = sds_path
                                 if uploaded_sds is not None:
                                     final_sds_path = save_sds_file(
@@ -693,7 +684,7 @@ for i, cat in enumerate(categories):
                                     "詳細編集",
                                     f"旧名:{selected_item} | 添付ファイル更新",
                                 )
-                                st.session_state[session_key] = new_name_clean
+                                st.session_state[select_key] = new_name_clean
                                 st.success(
                                     f"「{new_name_clean}」の情報を更新しました！"
                                 )
@@ -727,7 +718,6 @@ for i, cat in enumerate(categories):
                 )
                 f_safe = st.selectbox("安全区分タグ", SAFETY_CATEGORIES)
 
-                # 新規追加のファイル添付欄
                 f_sds_file = st.file_uploader(
                     "📄 SDS・添付ファイル(PDF等)をアップロード",
                     type=["pdf", "png", "jpg", "jpeg", "xlsx", "docx"],
