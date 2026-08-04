@@ -35,7 +35,6 @@ SAFETY_CATEGORIES = [
     "要冷蔵 ❄️",
 ]
 
-
 # ---------------------------------------------------------
 # 2. 設定・データ処理関数
 # ---------------------------------------------------------
@@ -75,15 +74,12 @@ def send_google_chat_notification(webhook_url, message_text):
         return False, f"送信失敗: {e}"
 
 
-def send_email_notification(
-    smtp_user, smtp_password, to_emails, subject, body
-):
+def send_email_notification(smtp_user, smtp_password, to_emails, subject, body):
     try:
         msg = MIMEText(body, "plain", "utf-8")
         msg["Subject"] = Header(subject, "utf-8")
         msg["From"] = smtp_user
         msg["To"] = ", ".join(to_emails)
-
         server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
         server.login(smtp_user, smtp_password)
         server.sendmail(smtp_user, to_emails, msg.as_string())
@@ -98,12 +94,13 @@ def load_data():
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         cols = [
             "タブ名", "品名", "在庫数", "発注点", "単位", "更新日時",
-            "保管場所", "安全区分", "SDSファイル", "ロット番号", "使用期限", "検索タグ", "備考", "メッセージ"
+            "保管場所", "安全区分", "SDSファイル", "ロット番号", "使用期限", "検索タグ", "備考", "メッセージ",
+            "入荷予定日", "入荷予定数"
         ]
         df = pd.DataFrame(
             [
-                ["樹脂・原料", "POM 白 φ30×1000", 2, 3, "本", now, "棚A-1", "指定なし 📦", "", "LOT-001", "2026-12-31", "汎用樹脂, 試作", "メイン使用材", "残わずか"],
-                ["洗浄・化学品", "IPA (イソプロピルアルコール)", 1, 2, "缶", now, "危険物庫 B-1", "危険物 🔥", "", "CHM-992", "2024-05-01", "洗浄用, 溶剤", "火気厳禁", "要発注"],
+                ["樹脂・原料", "POM 白 φ30×1000", 2, 3, "本", now, "棚A-1", "指定なし 📦", "", "LOT-001", "2026-12-31", "汎用樹脂, 試作", "メイン使用材", "残わずか", "", 0],
+                ["洗浄・化学品", "IPA (イソプロピルアルコール)", 1, 2, "缶", now, "危険物庫 B-1", "危険物 🔥", "", "CHM-992", "2024-05-01", "洗浄用, 溶剤", "火気厳禁", "要発注", "", 0],
             ],
             columns=cols,
         )
@@ -111,20 +108,15 @@ def load_data():
 
     df = pd.read_csv(CSV_FILE, encoding="utf-8").fillna("")
 
-    # ★ 旧データから新データへの自動互換・列追加処理
+    # ★ データ互換性（新カラムの自動追加）
     needs_save = False
-    if "SDSファイル" not in df.columns:
-        df["SDSファイル"] = ""
-        needs_save = True
-    if "ロット番号" not in df.columns:
-        df["ロット番号"] = ""
-        needs_save = True
-    if "使用期限" not in df.columns:
-        df["使用期限"] = ""
-        needs_save = True
-    if "検索タグ" not in df.columns:
-        df["検索タグ"] = ""
-        needs_save = True
+    for col, default_val in [
+        ("SDSファイル", ""), ("ロット番号", ""), ("使用期限", ""), ("検索タグ", ""),
+        ("入荷予定日", ""), ("入荷予定数", 0)
+    ]:
+        if col not in df.columns:
+            df[col] = default_val
+            needs_save = True
 
     if needs_save:
         df.to_csv(CSV_FILE, index=False, encoding="utf-8")
@@ -133,7 +125,10 @@ def load_data():
 
 
 def save_data(df):
-    df.to_csv(CSV_FILE, index=False, encoding="utf-8")
+    # 保存する際は、表示用に追加した一時的な計算列を落としてから保存
+    drop_cols = ["期限状態", "ステータス", "添付", "入荷予定"]
+    df_to_save = df.drop(columns=[c for c in drop_cols if c in df.columns], errors='ignore')
+    df_to_save.to_csv(CSV_FILE, index=False, encoding="utf-8")
 
 
 def add_log(category, item_name, action, detail=""):
@@ -162,7 +157,6 @@ def save_global_message(msg):
         f.write(msg)
 
 
-# 使用期限の判定ロジック
 def check_expiry(date_str):
     if not str(date_str).strip():
         return "✅ 登録なし"
@@ -180,8 +174,36 @@ def check_expiry(date_str):
         return "❓ 日付エラー"
 
 
+# ★ 取り寄せ予定日を過ぎたアイテムを「自動入庫」させる処理
+def process_auto_arrival(df):
+    today = datetime.date.today()
+    updated = False
+    for idx, row in df.iterrows():
+        arr_date_str = str(row.get("入荷予定日", "")).strip()
+        if arr_date_str:
+            try:
+                arr_date = datetime.datetime.strptime(arr_date_str, "%Y-%m-%d").date()
+                # 予定日の「翌日」になったら自動で入庫処理（在庫ありに切り替え）
+                if today > arr_date:
+                    add_qty = int(row.get("入荷予定数", 0))
+                    item_name = row["品名"]
+                    
+                    df.at[idx, "在庫数"] += add_qty
+                    df.at[idx, "入荷予定日"] = ""
+                    df.at[idx, "入荷予定数"] = 0
+                    df.at[idx, "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    
+                    add_log(row["タブ名"], item_name, "自動入庫", f"取り寄せ分 {add_qty}{row['単位']} を追加")
+                    updated = True
+            except ValueError:
+                pass
+    if updated:
+        save_data(df)
+    return df
+
+
 df = load_data()
-# 各行に期限ステータスを計算
+df = process_auto_arrival(df) # ロード直後に自動入庫チェックを実行
 df["期限状態"] = df["使用期限"].apply(check_expiry)
 
 # ---------------------------------------------------------
@@ -202,7 +224,6 @@ out_of_stock = len(df[df["在庫数"] == 0])
 expired_items = len(df[df["期限状態"] == "❌ 期限切れ"])
 near_expiry_items = len(df[df["期限状態"].str.contains("⚠️", na=False)])
 
-# サマリーカード
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("📦 登録品目数", f"{total_items} 件")
 c2.metric("⚠️ 要発注・補充", f"{low_stock + out_of_stock} 件")
@@ -235,7 +256,7 @@ search_query = st.sidebar.text_input(
     "検索キーワード", placeholder="品名・タグ・ロット番号・場所..."
 )
 status_filter = st.sidebar.radio(
-    "状態絞り込み", ["すべて", "⚠️ 要発注のみ", "📅 期限切れ/間近", "📄 添付ファイルあり"]
+    "状態絞り込み", ["すべて", "⚠️ 要発注のみ", "🚚 取り寄せ中", "📅 期限切れ/間近", "📄 添付ファイルあり"]
 )
 
 st.sidebar.markdown("---")
@@ -263,9 +284,7 @@ if len(alert_df) > 0:
                 save_webhook_url(webhook_url.strip())
                 msg_lines = ["⚠️ **【原料・薬品アラート通知】**", ""]
                 for _, r in alert_df.iterrows():
-                    msg_lines.append(
-                        f"・[{r['タブ名']}] {r['品名']} | 在庫:{r['在庫数']}{r['単位']} | 期限:{r['期限状態']}"
-                    )
+                    msg_lines.append(f"・[{r['タブ名']}] {r['品名']} | 在庫:{r['在庫数']}{r['単位']} | 期限:{r['期限状態']}")
                 msg_lines.append("\n状況の確認および対応をお願いします！")
                 full_msg = "\n".join(msg_lines)
 
@@ -277,28 +296,6 @@ if len(alert_df) > 0:
                     st.sidebar.error(res_msg)
             else:
                 st.sidebar.error("Webhook URLを入力してください。")
-
-    elif notify_method == "Gmail一括送信":
-        sender_email = st.sidebar.text_input("送信元Gmailアドレス")
-        app_password = st.sidebar.text_input("アプリパスワード", type="password")
-        target_emails = st.sidebar.text_area("宛先アドレス (カンマ区切り)")
-
-        if st.sidebar.button("📧 メールを一括送信"):
-            if sender_email and app_password and target_emails:
-                emails_list = [e.strip() for e in target_emails.split(",") if e.strip()]
-                body_lines = ["【原料・薬品アラート通知】", "以下の品目に在庫不足または期限警告があります。", ""]
-                for _, r in alert_df.iterrows():
-                    body_lines.append(f"・[{r['タブ名']}] {r['品名']} | 在庫:{r['在庫数']}{r['単位']} | 期限:{r['期限状態']}")
-                body_lines.append("\n至急対応をお願いします。")
-                
-                ok, res_msg = send_email_notification(
-                    sender_email, app_password, emails_list, "【要対応】原料・薬品アラート", "\n".join(body_lines)
-                )
-                if ok:
-                    st.sidebar.success(res_msg)
-                    add_log("システム", "一括通知", "メール送信")
-                else:
-                    st.sidebar.error(res_msg)
 
 st.sidebar.markdown("---")
 st.sidebar.header("📝 全体連絡メモ編集")
@@ -315,8 +312,8 @@ if st.sidebar.button("＋ カテゴリ追加"):
     if new_cat and new_cat not in df["タブ名"].unique():
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         new_row = pd.DataFrame(
-            [[new_cat, "サンプル原料", 1, 1, "個", now, "", "指定なし 📦", "", "LOT-000", "", "", "", "初期アイテム"]],
-            columns=df.columns[:-1], # 期限状態列を除外して追加
+            [[new_cat, "サンプル原料", 1, 1, "個", now, "", "指定なし 📦", "", "LOT-000", "", "", "初期アイテム", "", "", 0]],
+            columns=[c for c in df.columns if c != "期限状態"],
         )
         df = pd.concat([df.drop(columns=["期限状態"]), new_row], ignore_index=True)
         save_data(df)
@@ -337,6 +334,8 @@ for i, cat in enumerate(categories):
         cat_df = df[df["タブ名"] == cat].copy()
 
         def get_status(row):
+            if str(row.get("入荷予定日", "")).strip():
+                return "🚚 取り寄せ中"
             if row["在庫数"] == 0:
                 return "❌ 在庫切れ"
             elif row["在庫数"] <= row["発注点"]:
@@ -348,13 +347,23 @@ for i, cat in enumerate(categories):
             path = str(row["SDSファイル"]).strip()
             return "📄 あり" if path and os.path.exists(path) else "-"
 
+        def get_arrival_info(row):
+            d = str(row.get("入荷予定日", "")).strip()
+            if d:
+                try:
+                    dt = datetime.datetime.strptime(d, "%Y-%m-%d")
+                    return f"{dt.month}/{dt.day} ({row['入荷予定数']})"
+                except:
+                    return d
+            return "-"
+
         if not cat_df.empty:
             cat_df["ステータス"] = cat_df.apply(get_status, axis=1)
             cat_df["添付"] = cat_df.apply(get_has_file, axis=1)
+            cat_df["入荷予定"] = cat_df.apply(get_arrival_info, axis=1)
 
         filtered_df = cat_df.copy()
         if search_query:
-            # 検索ロジックに「検索タグ」も含める
             filtered_df = filtered_df[
                 filtered_df["品名"].astype(str).str.contains(search_query, case=False)
                 | filtered_df["ロット番号"].astype(str).str.contains(search_query, case=False)
@@ -364,19 +373,21 @@ for i, cat in enumerate(categories):
 
         if status_filter == "⚠️ 要発注のみ":
             filtered_df = filtered_df[filtered_df["ステータス"] == "⚠️ 要発注"]
+        elif status_filter == "🚚 取り寄せ中":
+            filtered_df = filtered_df[filtered_df["ステータス"] == "🚚 取り寄せ中"]
         elif status_filter == "📅 期限切れ/間近":
             filtered_df = filtered_df[filtered_df["期限状態"].str.contains("❌|⚠️", regex=True)]
         elif status_filter == "📄 添付ファイルあり":
             filtered_df = filtered_df[filtered_df["添付"] == "📄 あり"]
 
         st.subheader(f"「{cat}」の一覧")
-        st.caption("👇 表のチェックボックスまたは行を選択すると、下の操作対象が自動変更されます")
+        st.caption("👇 表の行を選択すると、下の操作対象が自動変更されます")
 
         display_df = (filtered_df if not filtered_df.empty else cat_df).reset_index(drop=True)
 
         show_cols = [
             "品名", "検索タグ", "ロット番号", "在庫数", "単位", "期限状態", 
-            "ステータス", "添付", "安全区分", "保管場所", "備考", "更新日時"
+            "ステータス", "入荷予定", "添付", "安全区分", "保管場所", "備考", "更新日時"
         ]
 
         item_list = list(cat_df["品名"].unique())
@@ -396,7 +407,6 @@ for i, cat in enumerate(categories):
                 "在庫数": st.column_config.ProgressColumn(
                     "在庫数", format="%d", min_value=0, max_value=20
                 ),
-                "期限状態": st.column_config.TextColumn("期限状態"),
             }
         )
 
@@ -415,7 +425,7 @@ for i, cat in enumerate(categories):
                 st.session_state[select_key] = item_list[0]
 
             selected_item = st.selectbox(
-                "🎯 操作対象の品目（表の選択で即自動切り替え）",
+                "🎯 操作対象の品目",
                 item_list,
                 key=select_key,
             )
@@ -423,11 +433,10 @@ for i, cat in enumerate(categories):
             curr_row = cat_df[cat_df["品名"] == selected_item].iloc[0]
             sds_path = str(curr_row["SDSファイル"]).strip()
 
-            # ★ 操作パネルを2つの「タブ」にスッキリ整理
-            op_tab1, op_tab2 = st.tabs(["⚡ 入出庫クイック操作", "✏️ 詳細情報・編集"])
+            op_tab1, op_tab2 = st.tabs(["⚡ 入出庫・取り寄せ操作", "✏️ 詳細情報・編集"])
 
             # ----------------------------------------------------
-            # タブ1: 入出庫操作
+            # タブ1: 入出庫クイック操作 ＆ 取り寄せ
             # ----------------------------------------------------
             with op_tab1:
                 st.markdown(f"**現在の在庫:** `{curr_row['在庫数']} {curr_row['単位']}` / **ロット:** `{curr_row['ロット番号']}`")
@@ -438,7 +447,7 @@ for i, cat in enumerate(categories):
                     if not idx.empty:
                         df.loc[idx, "在庫数"] += 1
                         df.loc[idx, "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                        save_data(df.drop(columns=["期限状態"], errors='ignore'))
+                        save_data(df)
                         st.toast(f"「{selected_item}」を1つ補充しました！")
                         st.rerun()
 
@@ -448,7 +457,7 @@ for i, cat in enumerate(categories):
                         if df.loc[idx[0], "在庫数"] > 0:
                             df.loc[idx, "在庫数"] -= 1
                             df.loc[idx, "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                            save_data(df.drop(columns=["期限状態"], errors='ignore'))
+                            save_data(df)
                             st.toast(f"「{selected_item}」を1つ使用しました！")
                             st.rerun()
                         else:
@@ -456,15 +465,60 @@ for i, cat in enumerate(categories):
 
                 if col_c.button("🗑️ 品目を削除", key=f"del_{cat}", use_container_width=True):
                     df = df[~((df["タブ名"] == cat) & (df["品名"] == selected_item))]
-                    save_data(df.drop(columns=["期限状態"], errors='ignore'))
+                    save_data(df)
                     st.warning(f"「{selected_item}」を削除しました。")
                     st.rerun()
+
+                # ★ 取り寄せ・発注の手配セクション
+                st.markdown("---")
+                st.markdown("### 🚚 取り寄せ・発注の手配")
+                arr_date = str(curr_row.get("入荷予定日", "")).strip()
+                
+                if arr_date:
+                    st.info(f"🚚 現在 **{curr_row['入荷予定数']} {curr_row['単位']}** を取り寄せ中です。（到着予定日: {arr_date}）\n\n※予定日の翌日に自動で在庫へ加算されます。")
+                    
+                    ac1, ac2 = st.columns(2)
+                    if ac1.button("✅ 今すぐ入荷を確定する (手動入庫)", key=f"force_arr_{cat}", use_container_width=True):
+                        idx = df[(df["タブ名"] == cat) & (df["品名"] == selected_item)].index
+                        add_qty = int(curr_row["入荷予定数"])
+                        df.loc[idx, "在庫数"] += add_qty
+                        df.loc[idx, "入荷予定日"] = ""
+                        df.loc[idx, "入荷予定数"] = 0
+                        df.loc[idx, "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                        save_data(df)
+                        add_log(cat, selected_item, "手動入荷", f"{add_qty}{curr_row['単位']} を追加")
+                        st.success(f"{add_qty}{curr_row['単位']} を在庫に手動で追加しました！")
+                        st.rerun()
+
+                    if ac2.button("❌ 手配をキャンセル", key=f"cancel_arr_{cat}", use_container_width=True):
+                        idx = df[(df["タブ名"] == cat) & (df["品名"] == selected_item)].index
+                        df.loc[idx, "入荷予定日"] = ""
+                        df.loc[idx, "入荷予定数"] = 0
+                        save_data(df)
+                        add_log(cat, selected_item, "取り寄せ取消", "")
+                        st.toast("取り寄せ手配をキャンセルしました。")
+                        st.rerun()
+                else:
+                    with st.form(key=f"arrange_form_{cat}_{selected_item}"):
+                        ac1, ac2 = st.columns(2)
+                        arr_qty = ac1.number_input("取り寄せ予定数", min_value=1, value=int(curr_row["発注点"]) if curr_row["発注点"]>0 else 1)
+                        default_date = datetime.date.today() + datetime.timedelta(days=3)
+                        arr_dt = ac2.date_input("入荷予定日", value=default_date)
+                        
+                        if st.form_submit_button("取り寄せ手配を登録する"):
+                            idx = df[(df["タブ名"] == cat) & (df["品名"] == selected_item)].index
+                            df.loc[idx, "入荷予定日"] = arr_dt.strftime("%Y-%m-%d")
+                            df.loc[idx, "入荷予定数"] = int(arr_qty)
+                            save_data(df)
+                            add_log(cat, selected_item, "取り寄せ登録", f"{arr_qty}{curr_row['単位']} 予定日:{arr_dt}")
+                            st.toast("取り寄せ手配を登録しました！")
+                            st.rerun()
+
 
             # ----------------------------------------------------
             # タブ2: 情報編集・添付ファイル
             # ----------------------------------------------------
             with op_tab2:
-                # 添付ファイルのダウンロードボタンを編集画面の先頭に表示
                 if sds_path and os.path.exists(sds_path):
                     with open(sds_path, "rb") as file:
                         st.download_button(
@@ -478,7 +532,7 @@ for i, cat in enumerate(categories):
 
                 with st.form(f"edit_form_{cat}_{selected_item}"):
                     e_name = st.text_input("品名", value=curr_row["品名"])
-                    e_tags = st.text_input("🏷️ 検索用タグ (複数ある場合はカンマ区切りで入力)", value=curr_row["検索タグ"], placeholder="例: 汎用樹脂, 試作, 洗浄用")
+                    e_tags = st.text_input("🏷️ 検索用タグ (複数ある場合はカンマ区切り)", value=curr_row["検索タグ"], placeholder="例: 汎用樹脂, 試作, 洗浄用")
 
                     ec1, ec2, ec3 = st.columns(3)
                     e_qty = ec1.number_input("在庫数", min_value=0, value=int(curr_row["在庫数"]), step=1)
@@ -527,7 +581,7 @@ for i, cat in enumerate(categories):
                                 df.loc[idx[0], "備考"] = e_rem.strip()
                                 df.loc[idx[0], "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-                                save_data(df.drop(columns=["期限状態"], errors='ignore'))
+                                save_data(df)
                                 st.session_state[select_key] = new_name_clean
                                 st.success(f"「{new_name_clean}」の情報を更新しました！")
                                 st.rerun()
@@ -567,11 +621,11 @@ for i, cat in enumerate(categories):
                                     cat, f_name.strip(), int(f_qty), int(f_min), f_unit, 
                                     datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), 
                                     f_loc.strip(), f_safe, saved_path, f_lot.strip(), 
-                                    f_exp.strftime("%Y-%m-%d") if f_exp else "", f_tags.strip(), f_rem.strip(), ""
+                                    f_exp.strftime("%Y-%m-%d") if f_exp else "", f_tags.strip(), f_rem.strip(), "", "", 0
                                 ]],
-                                columns=df.columns[:-1], # 期限状態列を除く
+                                columns=[c for c in df.columns if c not in ["期限状態", "ステータス", "添付", "入荷予定"]]
                             )
-                            df = pd.concat([df.drop(columns=["期限状態"]), new_row], ignore_index=True)
+                            df = pd.concat([df.drop(columns=["期限状態", "ステータス", "添付", "入荷予定"], errors='ignore'), new_row], ignore_index=True)
                             save_data(df)
                             st.success(f"「{f_name.strip()}」を登録しました！")
                             st.rerun()
