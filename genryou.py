@@ -1,8 +1,6 @@
 import csv
 import os
 import sys
-import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk, filedialog
 import datetime
 import webbrowser
 
