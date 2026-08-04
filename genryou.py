@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import smtplib
+import mimetypes  # ★ ファイルの種類を自動判定して開きやすくする機能を追加
 from email.header import Header
 from email.mime.text import MIMEText
 import urllib.request
@@ -108,7 +109,6 @@ def load_data():
 
     df = pd.read_csv(CSV_FILE, encoding="utf-8").fillna("")
 
-    # ★ データ互換性（新カラムの自動追加）
     needs_save = False
     for col, default_val in [
         ("SDSファイル", ""), ("ロット番号", ""), ("使用期限", ""), ("検索タグ", ""),
@@ -125,7 +125,6 @@ def load_data():
 
 
 def save_data(df):
-    # 保存する際は、表示用に追加した一時的な計算列を落としてから保存
     drop_cols = ["期限状態", "ステータス", "添付", "入荷予定"]
     df_to_save = df.drop(columns=[c for c in drop_cols if c in df.columns], errors='ignore')
     df_to_save.to_csv(CSV_FILE, index=False, encoding="utf-8")
@@ -174,7 +173,6 @@ def check_expiry(date_str):
         return "❓ 日付エラー"
 
 
-# ★ 取り寄せ予定日を過ぎたアイテムを「自動入庫」させる処理
 def process_auto_arrival(df):
     today = datetime.date.today()
     updated = False
@@ -183,7 +181,6 @@ def process_auto_arrival(df):
         if arr_date_str:
             try:
                 arr_date = datetime.datetime.strptime(arr_date_str, "%Y-%m-%d").date()
-                # 予定日の「翌日」になったら自動で入庫処理（在庫ありに切り替え）
                 if today > arr_date:
                     add_qty = int(row.get("入荷予定数", 0))
                     item_name = row["品名"]
@@ -203,7 +200,7 @@ def process_auto_arrival(df):
 
 
 df = load_data()
-df = process_auto_arrival(df) # ロード直後に自動入庫チェックを実行
+df = process_auto_arrival(df)
 df["期限状態"] = df["使用期限"].apply(check_expiry)
 
 # ---------------------------------------------------------
@@ -220,7 +217,6 @@ low_stock_df = df[(df["在庫数"] <= df["発注点"]) & (df["品名"] != "")]
 low_stock = len(low_stock_df[low_stock_df["在庫数"] > 0])
 out_of_stock = len(df[df["在庫数"] == 0])
 
-# 期限切れ・期限間近の集計
 expired_items = len(df[df["期限状態"] == "❌ 期限切れ"])
 near_expiry_items = len(df[df["期限状態"].str.contains("⚠️", na=False)])
 
@@ -262,7 +258,6 @@ status_filter = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.header("📢 アラート一括通知")
 
-# 在庫不足 または 期限警告がある場合
 alert_df = df[(df["在庫数"] <= df["発注点"]) | (df["期限状態"].str.contains("❌|⚠️", regex=True))]
 if len(alert_df) > 0:
     notify_method = st.sidebar.radio(
@@ -343,9 +338,10 @@ for i, cat in enumerate(categories):
             else:
                 return "✅ 良好"
 
+        # ★ ここを変更！ 添付ファイルがある行は「選択して開く」と強調表示
         def get_has_file(row):
             path = str(row["SDSファイル"]).strip()
-            return "📄 あり" if path and os.path.exists(path) else "-"
+            return "📄 選択して開く" if path and os.path.exists(path) else "-"
 
         def get_arrival_info(row):
             d = str(row.get("入荷予定日", "")).strip()
@@ -378,10 +374,10 @@ for i, cat in enumerate(categories):
         elif status_filter == "📅 期限切れ/間近":
             filtered_df = filtered_df[filtered_df["期限状態"].str.contains("❌|⚠️", regex=True)]
         elif status_filter == "📄 添付ファイルあり":
-            filtered_df = filtered_df[filtered_df["添付"] == "📄 あり"]
+            filtered_df = filtered_df[filtered_df["添付"] != "-"]
 
         st.subheader(f"「{cat}」の一覧")
-        st.caption("👇 表の行を選択すると、下の操作対象が自動変更されます")
+        st.caption("👇 表の行（添付ありの品目など）をタップ・選択すると、すぐ下にファイルや操作メニューが表示されます")
 
         display_df = (filtered_df if not filtered_df.empty else cat_df).reset_index(drop=True)
 
@@ -433,6 +429,29 @@ for i, cat in enumerate(categories):
             curr_row = cat_df[cat_df["品名"] == selected_item].iloc[0]
             sds_path = str(curr_row["SDSファイル"]).strip()
 
+            # =========================================================
+            # ★ 大幅改善：表をタップした瞬間に、一番目立つ場所にボタンを表示！
+            # =========================================================
+            if sds_path and os.path.exists(sds_path):
+                st.success(f"📂 **{selected_item}** には添付ファイル（SDS）があります")
+                
+                # ファイル形式を自動判定（スマホなどでPDFを直接ブラウザで開きやすくする対応）
+                mime_type, _ = mimetypes.guess_type(sds_path)
+                if not mime_type:
+                    mime_type = "application/octet-stream"
+
+                with open(sds_path, "rb") as file:
+                    st.download_button(
+                        label=f"📄 {selected_item} の添付ファイルを開く・ダウンロード",
+                        data=file, 
+                        file_name=os.path.basename(sds_path), 
+                        mime=mime_type, 
+                        use_container_width=True,
+                        type="primary"  # ★ 青くて目立つ大きなボタンにする
+                    )
+                st.write("") # ボタンの下に少し余白を作る
+            # =========================================================
+
             op_tab1, op_tab2 = st.tabs(["⚡ 入出庫・取り寄せ操作", "✏️ 詳細情報・編集"])
 
             # ----------------------------------------------------
@@ -469,7 +488,7 @@ for i, cat in enumerate(categories):
                     st.warning(f"「{selected_item}」を削除しました。")
                     st.rerun()
 
-                # ★ 取り寄せ・発注の手配セクション
+                # 取り寄せ・発注の手配セクション
                 st.markdown("---")
                 st.markdown("### 🚚 取り寄せ・発注の手配")
                 arr_date = str(curr_row.get("入荷予定日", "")).strip()
@@ -519,17 +538,6 @@ for i, cat in enumerate(categories):
             # タブ2: 情報編集・添付ファイル
             # ----------------------------------------------------
             with op_tab2:
-                if sds_path and os.path.exists(sds_path):
-                    with open(sds_path, "rb") as file:
-                        st.download_button(
-                            label=f"📄 登録済みの添付ファイル（SDS）をダウンロード",
-                            data=file, file_name=os.path.basename(sds_path), mime="application/octet-stream", use_container_width=True
-                        )
-                else:
-                    st.info("※ 現在この品目に添付ファイルは登録されていません。")
-
-                st.write("")
-
                 with st.form(f"edit_form_{cat}_{selected_item}"):
                     e_name = st.text_input("品名", value=curr_row["品名"])
                     e_tags = st.text_input("🏷️ 検索用タグ (複数ある場合はカンマ区切り)", value=curr_row["検索タグ"], placeholder="例: 汎用樹脂, 試作, 洗浄用")
