@@ -578,9 +578,3 @@ class UltimateInventoryAppV3:
             messagebox.showinfo("出力完了", "ブラウザで一覧を開きました。\n右クリックや設定メニューの「印刷」から『PDFとして保存』を選択してPDF化してください。")
         except Exception as e:
             messagebox.showerror("エラー", f"出力に失敗しました:\n{e}")
-
-
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = UltimateInventoryAppV3(root)
-    root.mainloop()
