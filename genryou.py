@@ -23,9 +23,9 @@ CSV_FILE = "sds_inventory_tabs.csv"
 LOG_FILE = "sds_inventory_log.csv"
 MSG_FILE = "sds_global_message.txt"
 WEBHOOK_FILE = "sds_webhook_url.txt"
-SDS_DIR = "sds_files"  # ★ アップロードされたSDSファイルの保存フォルダ
+SDS_DIR = "sds_files"  # ★ 添付ファイルの保存フォルダ
 
-# SDS用フォルダがなければ自動作成
+# 添付ファイル用フォルダの自動生成
 os.makedirs(SDS_DIR, exist_ok=True)
 
 SAFETY_CATEGORIES = [
@@ -41,12 +41,10 @@ SAFETY_CATEGORIES = [
 # 2. 設定・データ処理関数
 # ---------------------------------------------------------
 def save_sds_file(uploaded_file, item_name):
-    """アップロードされたSDSファイルを保存してファイルパスを返す"""
+    """アップロードされた添付ファイルを保存してパスを返す"""
     if uploaded_file is None:
         return ""
-    # ファイル拡張子を取得 (.pdf など)
     ext = os.path.splitext(uploaded_file.name)[1]
-    # ファイル名のエラーを避けるため安全なファイル名を作成
     safe_name = f"{item_name}_SDS{ext}"
     file_path = os.path.join(SDS_DIR, safe_name)
 
@@ -149,9 +147,9 @@ def load_data():
 
     df = pd.read_csv(CSV_FILE, encoding="utf-8").fillna("")
 
-    # 旧データの互換性チェック（SDSファイル列名への対応）
-    if "SDSリンク" in df.columns and "SDSファイル" not in df.columns:
-        df.rename(columns={"SDSリンク": "SDSファイル"}, inplace=True)
+    # 旧データ互換用列チェック
+    if "SDSファイル" not in df.columns:
+        df["SDSファイル"] = ""
         df.to_csv(CSV_FILE, index=False, encoding="utf-8")
 
     return df
@@ -243,7 +241,7 @@ search_query = st.sidebar.text_input(
     "検索キーワード", placeholder="品名・保管場所・安全区分・メモ..."
 )
 status_filter = st.sidebar.radio(
-    "状態絞り込み", ["すべて", "⚠️ 要発注のみ", "📄 SDS登録あり"]
+    "状態絞り込み", ["すべて", "⚠️ 要発注のみ", "📄 添付ファイルあり"]
 )
 
 st.sidebar.markdown("---")
@@ -413,8 +411,14 @@ for i, cat in enumerate(categories):
             else:
                 return "✅ 良好"
 
+        # ★ 添付ファイルの有無状態を作成（テーブル表示用）
+        def get_has_file(row):
+            path = str(row["SDSファイル"]).strip()
+            return "📄 あり" if path and os.path.exists(path) else "-"
+
         if not cat_df.empty:
             cat_df["ステータス"] = cat_df.apply(get_status, axis=1)
+            cat_df["添付ファイル"] = cat_df.apply(get_has_file, axis=1)
 
         filtered_df = cat_df.copy()
         if search_query:
@@ -438,15 +442,22 @@ for i, cat in enumerate(categories):
 
         if status_filter == "⚠️ 要発注のみ":
             filtered_df = filtered_df[filtered_df["ステータス"] == "⚠️ 要発注"]
-        elif status_filter == "📄 SDS登録あり":
-            filtered_df = filtered_df[filtered_df["SDSファイル"] != ""]
+        elif status_filter == "📄 添付ファイルあり":
+            filtered_df = filtered_df[filtered_df["添付ファイル"] == "📄 あり"]
 
         st.subheader(f"「{cat}」の一覧")
+        st.caption("👇 表の行をタップ・クリックすると、その品目が選択されます")
+
+        display_df = (
+            filtered_df if not filtered_df.empty else cat_df
+        ).reset_index(drop=True)
+
         show_cols = [
             "品名",
             "在庫数",
             "発注点",
             "単位",
+            "添付ファイル",  # ★ 一覧表示用の添付有無列
             "安全区分",
             "保管場所",
             "備考",
@@ -454,43 +465,75 @@ for i, cat in enumerate(categories):
             "ステータス",
             "更新日時",
         ]
-        st.dataframe(
-            filtered_df[show_cols]
-            if not filtered_df.empty
-            else cat_df[show_cols],
+
+        # ★ 行クリック/タップイベント対応テーブル
+        event = st.dataframe(
+            display_df[show_cols],
             use_container_width=True,
             hide_index=True,
+            on_select="rerun",  # タップ時に即再描画
+            selection_mode="single-row",  # 1行選択モード
+            key=f"df_table_{cat}",
         )
 
-        st.markdown("---")
         item_list = list(cat_df["品名"].unique())
 
         if item_list:
-            st.markdown("### ⚡ 現場クイック操作・SDS閲覧・編集")
-            selected_item = st.selectbox(
-                "操作または編集する品目を選択してください",
-                item_list,
-                key=f"select_{cat}",
+            # タップされた行の品名を取得
+            session_key = f"selected_item_{cat}"
+            if session_key not in st.session_state:
+                st.session_state[session_key] = item_list[0]
+
+            # テーブル行がクリックされた場合の連動処理
+            selected_rows = (
+                event.selection.rows
+                if event and hasattr(event, "selection")
+                else []
             )
+            if selected_rows:
+                clicked_idx = selected_rows[0]
+                if clicked_idx < len(display_df):
+                    clicked_item = display_df.iloc[clicked_idx]["品名"]
+                    if clicked_item in item_list:
+                        st.session_state[session_key] = clicked_item
+
+            st.markdown("---")
+            st.markdown("### ⚡ 現場クイック操作・SDS閲覧・編集")
+
+            # セレクトボックス（タップ選択と完全同期）
+            selected_index = (
+                item_list.index(st.session_state[session_key])
+                if st.session_state[session_key] in item_list
+                else 0
+            )
+
+            selected_item = st.selectbox(
+                "操作または編集する品目（表タップでも切り替わります）",
+                item_list,
+                index=selected_index,
+                key=f"select_box_{cat}",
+            )
+            # 手動でセレクトボックスを変更した場合の同期
+            st.session_state[session_key] = selected_item
 
             curr_row = cat_df[cat_df["品名"] == selected_item].iloc[0]
             sds_path = str(curr_row["SDSファイル"]).strip()
 
-            # ★ SDSファイル閲覧・ダウンロードボタン
+            # ★ 添付ファイル（SDS）開く・ダウンロードボタン
             if sds_path and os.path.exists(sds_path):
                 with open(sds_path, "rb") as file:
                     st.download_button(
                         label=(
-                            f"📄 「{selected_item}」の SDS（安全データシート）を開く・ダウンロード"
+                            f"📄 「{selected_item}」の 添付ファイル（SDS）を開く・ダウンロード"
                         ),
                         data=file,
                         file_name=os.path.basename(sds_path),
-                        mime="application/pdf",
+                        mime="application/octet-stream",
                         use_container_width=True,
                     )
             else:
                 st.caption(
-                    "※この品目にはSDSファイルがまだ登録されていません。下の編集フォームからPDFをアップロードできます。"
+                    "※この品目にはSDS等の添付ファイルがまだ登録されていません。下の編集フォームから添付できます。"
                 )
 
             st.write("")
@@ -551,9 +594,9 @@ for i, cat in enumerate(categories):
                 st.warning(f"「{selected_item}」を削除しました。")
                 st.rerun()
 
-            # ✏️ 編集フォーム (ファイルアップロード対応)
+            # ✏️ 編集フォーム (添付ファイル操作対応)
             with st.expander(
-                f"✏️ 「{selected_item}」の品名・SDSファイル・情報を編集"
+                f"✏️ 「{selected_item}」の品名・SDS添付ファイル・情報を編集"
             ):
                 with st.form(f"edit_form_{cat}_{selected_item}"):
                     e_name = st.text_input("品名", value=curr_row["品名"])
@@ -585,15 +628,16 @@ for i, cat in enumerate(categories):
                         ),
                     )
 
-                    # ★ SDSファイルアップロード入力欄
-                    st.markdown("**📄 SDS（安全データシート）ファイルの指定**")
-                    if sds_path:
+                    # 📄 SDS・添付ファイル選択欄
+                    st.markdown("**📄 SDS・添付ファイルの登録**")
+                    if sds_path and os.path.exists(sds_path):
                         st.caption(
-                            f"現在のファイル: `{os.path.basename(sds_path)}`"
+                            f"現在の添付ファイル:"
+                            f" `{os.path.basename(sds_path)}`"
                         )
                     uploaded_sds = st.file_uploader(
-                        "新しいSDSファイル(PDFなど)を選択",
-                        type=["pdf", "png", "jpg", "jpeg"],
+                        "新しい添付ファイル(PDF, 画像等)を選択",
+                        type=["pdf", "png", "jpg", "jpeg", "xlsx", "docx"],
                         key=f"file_edit_{selected_item}",
                     )
 
@@ -624,7 +668,7 @@ for i, cat in enumerate(categories):
                                     "%Y-%m-%d %H:%M"
                                 )
 
-                                # ファイルの新規アップロード処理
+                                # 添付ファイルの更新処理
                                 final_sds_path = sds_path
                                 if uploaded_sds is not None:
                                     final_sds_path = save_sds_file(
@@ -647,8 +691,9 @@ for i, cat in enumerate(categories):
                                     cat,
                                     new_name_clean,
                                     "詳細編集",
-                                    f"旧名:{selected_item} | SDSファイル更新",
+                                    f"旧名:{selected_item} | 添付ファイル更新",
                                 )
+                                st.session_state[session_key] = new_name_clean
                                 st.success(
                                     f"「{new_name_clean}」の情報を更新しました！"
                                 )
@@ -682,10 +727,10 @@ for i, cat in enumerate(categories):
                 )
                 f_safe = st.selectbox("安全区分タグ", SAFETY_CATEGORIES)
 
-                # ★ 新規登録用のファイル添付欄
+                # 新規追加のファイル添付欄
                 f_sds_file = st.file_uploader(
-                    "📄 SDSファイル(PDFなど)をアップロード",
-                    type=["pdf", "png", "jpg", "jpeg"],
+                    "📄 SDS・添付ファイル(PDF等)をアップロード",
+                    type=["pdf", "png", "jpg", "jpeg", "xlsx", "docx"],
                     key=f"file_add_{cat}",
                 )
 
@@ -705,7 +750,6 @@ for i, cat in enumerate(categories):
                             now = datetime.datetime.now().strftime(
                                 "%Y-%m-%d %H:%M"
                             )
-                            # ファイル保存処理
                             saved_path = ""
                             if f_sds_file is not None:
                                 saved_path = save_sds_file(
