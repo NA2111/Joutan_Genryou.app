@@ -18,11 +18,15 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# 保存用ファイル名設定（専用ファイルで独立）
+# 保存用ファイル・フォルダ設定
 CSV_FILE = "sds_inventory_tabs.csv"
 LOG_FILE = "sds_inventory_log.csv"
 MSG_FILE = "sds_global_message.txt"
 WEBHOOK_FILE = "sds_webhook_url.txt"
+SDS_DIR = "sds_files"  # ★ アップロードされたSDSファイルの保存フォルダ
+
+# SDS用フォルダがなければ自動作成
+os.makedirs(SDS_DIR, exist_ok=True)
 
 SAFETY_CATEGORIES = [
     "指定なし 📦",
@@ -36,6 +40,21 @@ SAFETY_CATEGORIES = [
 # ---------------------------------------------------------
 # 2. 設定・データ処理関数
 # ---------------------------------------------------------
+def save_sds_file(uploaded_file, item_name):
+    """アップロードされたSDSファイルを保存してファイルパスを返す"""
+    if uploaded_file is None:
+        return ""
+    # ファイル拡張子を取得 (.pdf など)
+    ext = os.path.splitext(uploaded_file.name)[1]
+    # ファイル名のエラーを避けるため安全なファイル名を作成
+    safe_name = f"{item_name}_SDS{ext}"
+    file_path = os.path.join(SDS_DIR, safe_name)
+
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return file_path
+
+
 def load_webhook_url():
     if os.path.exists(WEBHOOK_FILE):
         with open(WEBHOOK_FILE, "r", encoding="utf-8") as f:
@@ -89,7 +108,7 @@ def load_data():
         "更新日時",
         "保管場所",
         "安全区分",
-        "SDSリンク",
+        "SDSファイル",
         "備考",
         "メッセージ",
     ]
@@ -119,7 +138,7 @@ def load_data():
                     now,
                     "危険物庫 B-1",
                     "危険物 🔥",
-                    "https://example.com/sds/ipa.pdf",
+                    "",
                     "火気厳禁",
                     "要発注",
                 ],
@@ -129,6 +148,12 @@ def load_data():
         df.to_csv(CSV_FILE, index=False, encoding="utf-8")
 
     df = pd.read_csv(CSV_FILE, encoding="utf-8").fillna("")
+
+    # 旧データの互換性チェック（SDSファイル列名への対応）
+    if "SDSリンク" in df.columns and "SDSファイル" not in df.columns:
+        df.rename(columns={"SDSリンク": "SDSファイル"}, inplace=True)
+        df.to_csv(CSV_FILE, index=False, encoding="utf-8")
+
     return df
 
 
@@ -414,7 +439,7 @@ for i, cat in enumerate(categories):
         if status_filter == "⚠️ 要発注のみ":
             filtered_df = filtered_df[filtered_df["ステータス"] == "⚠️ 要発注"]
         elif status_filter == "📄 SDS登録あり":
-            filtered_df = filtered_df[filtered_df["SDSリンク"] != ""]
+            filtered_df = filtered_df[filtered_df["SDSファイル"] != ""]
 
         st.subheader(f"「{cat}」の一覧")
         show_cols = [
@@ -449,16 +474,23 @@ for i, cat in enumerate(categories):
             )
 
             curr_row = cat_df[cat_df["品名"] == selected_item].iloc[0]
+            sds_path = str(curr_row["SDSファイル"]).strip()
 
-            if curr_row["SDSリンク"].strip():
-                st.link_button(
-                    f"📄 「{selected_item}」の SDS（安全データシート）を開く",
-                    curr_row["SDSリンク"].strip(),
-                    use_container_width=True,
-                )
+            # ★ SDSファイル閲覧・ダウンロードボタン
+            if sds_path and os.path.exists(sds_path):
+                with open(sds_path, "rb") as file:
+                    st.download_button(
+                        label=(
+                            f"📄 「{selected_item}」の SDS（安全データシート）を開く・ダウンロード"
+                        ),
+                        data=file,
+                        file_name=os.path.basename(sds_path),
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
             else:
                 st.caption(
-                    "※この品目にはSDSリンクがまだ登録されていません。下の編集フォームから登録できます。"
+                    "※この品目にはSDSファイルがまだ登録されていません。下の編集フォームからPDFをアップロードできます。"
                 )
 
             st.write("")
@@ -519,8 +551,9 @@ for i, cat in enumerate(categories):
                 st.warning(f"「{selected_item}」を削除しました。")
                 st.rerun()
 
+            # ✏️ 編集フォーム (ファイルアップロード対応)
             with st.expander(
-                f"✏️ 「{selected_item}」の品名・SDS・発注点・情報を編集"
+                f"✏️ 「{selected_item}」の品名・SDSファイル・情報を編集"
             ):
                 with st.form(f"edit_form_{cat}_{selected_item}"):
                     e_name = st.text_input("品名", value=curr_row["品名"])
@@ -551,11 +584,19 @@ for i, cat in enumerate(categories):
                             else 0
                         ),
                     )
-                    e_sds = st.text_input(
-                        "📄 SDS URL（PDF等のWebリンク）",
-                        value=curr_row["SDSリンク"],
-                        placeholder="https://.../sds.pdf",
+
+                    # ★ SDSファイルアップロード入力欄
+                    st.markdown("**📄 SDS（安全データシート）ファイルの指定**")
+                    if sds_path:
+                        st.caption(
+                            f"現在のファイル: `{os.path.basename(sds_path)}`"
+                        )
+                    uploaded_sds = st.file_uploader(
+                        "新しいSDSファイル(PDFなど)を選択",
+                        type=["pdf", "png", "jpg", "jpeg"],
+                        key=f"file_edit_{selected_item}",
                     )
+
                     e_loc = st.text_input("保管場所", value=curr_row["保管場所"])
                     e_rem = st.text_input("備考", value=curr_row["備考"])
                     e_msg = st.text_input(
@@ -582,12 +623,20 @@ for i, cat in enumerate(categories):
                                 now = datetime.datetime.now().strftime(
                                     "%Y-%m-%d %H:%M"
                                 )
+
+                                # ファイルの新規アップロード処理
+                                final_sds_path = sds_path
+                                if uploaded_sds is not None:
+                                    final_sds_path = save_sds_file(
+                                        uploaded_sds, new_name_clean
+                                    )
+
                                 df.loc[idx[0], "品名"] = new_name_clean
                                 df.loc[idx[0], "在庫数"] = int(e_qty)
                                 df.loc[idx[0], "発注点"] = int(e_min)
                                 df.loc[idx[0], "単位"] = e_unit.strip()
                                 df.loc[idx[0], "安全区分"] = e_safe
-                                df.loc[idx[0], "SDSリンク"] = e_sds.strip()
+                                df.loc[idx[0], "SDSファイル"] = final_sds_path
                                 df.loc[idx[0], "保管場所"] = e_loc.strip()
                                 df.loc[idx[0], "備考"] = e_rem.strip()
                                 df.loc[idx[0], "メッセージ"] = e_msg.strip()
@@ -598,13 +647,14 @@ for i, cat in enumerate(categories):
                                     cat,
                                     new_name_clean,
                                     "詳細編集",
-                                    f"旧名:{selected_item} | SDS更新",
+                                    f"旧名:{selected_item} | SDSファイル更新",
                                 )
                                 st.success(
                                     f"「{new_name_clean}」の情報を更新しました！"
                                 )
                                 st.rerun()
 
+        # ➕ 新規品目追加フォーム
         with st.expander(f"➕ 「{cat}」に新しい品目を追加"):
             with st.form(f"add_item_form_{cat}"):
                 f_name = st.text_input("品名 (例: イソプロピルアルコール)")
@@ -631,10 +681,14 @@ for i, cat in enumerate(categories):
                     ],
                 )
                 f_safe = st.selectbox("安全区分タグ", SAFETY_CATEGORIES)
-                f_sds = st.text_input(
-                    "📄 SDS URL（PDF等のWebリンク）",
-                    placeholder="https://.../sds.pdf",
+
+                # ★ 新規登録用のファイル添付欄
+                f_sds_file = st.file_uploader(
+                    "📄 SDSファイル(PDFなど)をアップロード",
+                    type=["pdf", "png", "jpg", "jpeg"],
+                    key=f"file_add_{cat}",
                 )
+
                 f_loc = st.text_input("保管場所 (例: 危険物倉庫 棚A-1)")
                 f_rem = st.text_input("備考 (例: 火気厳禁)")
                 f_msg = st.text_input("メッセージ", value="")
@@ -651,6 +705,13 @@ for i, cat in enumerate(categories):
                             now = datetime.datetime.now().strftime(
                                 "%Y-%m-%d %H:%M"
                             )
+                            # ファイル保存処理
+                            saved_path = ""
+                            if f_sds_file is not None:
+                                saved_path = save_sds_file(
+                                    f_sds_file, f_name.strip()
+                                )
+
                             new_row = pd.DataFrame(
                                 [
                                     [
@@ -662,7 +723,7 @@ for i, cat in enumerate(categories):
                                         now,
                                         f_loc.strip(),
                                         f_safe,
-                                        f_sds.strip(),
+                                        saved_path,
                                         f_rem.strip(),
                                         f_msg.strip(),
                                     ]
