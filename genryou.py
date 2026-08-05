@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 # ---------------------------------------------------------
-# 1. ページ基本設定 ＆ タイムゾーン設定 (日本時間 JST: UTC+9)
+# 1. ページ基本設定 (※一番最初に記述する必要があります)
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="SDS・素材原料管理PRO",
@@ -19,13 +19,52 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ---------------------------------------------------------
+# 🔑 社内専用 ログイン認証機能
+# ---------------------------------------------------------
+def check_password():
+    """正しいパスワードが入力されるまでログイン画面を表示する"""
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.markdown("## 🔒 社内専用 SDS・素材原料管理PRO")
+    st.info("🔐 セキュリティのため、社内共通パスワードを入力してログインしてください。")
+
+    with st.form("login_form"):
+        password_input = st.text_input("社内パスワード", type="password")
+        submitted = st.form_submit_button("🔑 ログイン")
+
+    if submitted:
+        # 1. ルート直下 2. gchat_webhooksの中 3. デフォルト "1234"
+        if "APP_PASSWORD" in st.secrets:
+            correct_password = str(st.secrets["APP_PASSWORD"]).strip()
+        elif "gchat_webhooks" in st.secrets and "APP_PASSWORD" in st.secrets["gchat_webhooks"]:
+            correct_password = str(st.secrets["gchat_webhooks"]["APP_PASSWORD"]).strip()
+        else:
+            correct_password = "1234"
+
+        if password_input.strip() == correct_password:
+            st.session_state["password_correct"] = True
+            st.rerun()
+        else:
+            st.error("❌ パスワードが正しくありません。")
+
+    return False
+
+# 認証されていない場合はここで処理を停止
+if not check_password():
+    st.stop()
+
+
+# ---------------------------------------------------------
+# 2. タイムゾーン ＆ 保存用ファイル設定 (日本時間 JST: UTC+9)
+# ---------------------------------------------------------
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
 def get_jst_now(fmt="%Y-%m-%d %H:%M"):
     """常に日本時間（JST）で現在日時を返す関数"""
     return datetime.datetime.now(JST).strftime(fmt)
 
-# 保存用ファイル・フォルダ設定
 CSV_FILE = "sds_inventory_tabs.csv"
 LOG_FILE = "sds_inventory_log.csv"
 MSG_FILE = "sds_global_message.txt"
@@ -43,7 +82,7 @@ SAFETY_CATEGORIES = [
 ]
 
 # ---------------------------------------------------------
-# 2. 設定・データ処理関数
+# 3. 設定・データ処理関数
 # ---------------------------------------------------------
 def save_sds_file(uploaded_file, item_name):
     if uploaded_file is None:
@@ -59,12 +98,11 @@ def save_sds_file(uploaded_file, item_name):
 def load_webhooks():
     """登録済みWebhook辞書を読み込む（Secrets + ローカルJSON）"""
     webhooks = {}
-    # 1. Streamlit Secrets に設定がある場合は優先読み込み
     if "gchat_webhooks" in st.secrets:
         for name, url in st.secrets["gchat_webhooks"].items():
-            webhooks[name] = str(url).strip()
+            if name != "APP_PASSWORD":  # パスワード項目は除外
+                webhooks[name] = str(url).strip()
             
-    # 2. ローカル保存ファイルがあれば追加読み込み
     if os.path.exists(WEBHOOKS_FILE):
         try:
             with open(WEBHOOKS_FILE, "r", encoding="utf-8") as f:
@@ -223,9 +261,16 @@ df = process_auto_arrival(df)
 df["期限状態"] = df["使用期限"].apply(check_expiry)
 
 # ---------------------------------------------------------
-# 3. メインヘッダー ＆ サマリーダッシュボード
+# 4. メインヘッダー ＆ サマリーダッシュボード
 # ---------------------------------------------------------
-st.title("🧪 SDS・素材原料管理PRO")
+st.title("🧪 SDS・素材原料管理PRO (社内専用)")
+
+# サイドバー最上部にログアウトボタンを配置
+if st.sidebar.button("🔒 ログアウト"):
+    st.session_state["password_correct"] = False
+    st.rerun()
+
+st.sidebar.markdown("---")
 
 global_msg = load_global_message()
 if global_msg.strip():
@@ -248,7 +293,7 @@ c4.metric("📅 期限切れ/間近", f"{expired_items + near_expiry_items} 件"
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 4. サイドバー (要発注・検索・通知・ログ)
+# 5. サイドバー (要発注・検索・通知・ログ)
 # ---------------------------------------------------------
 st.sidebar.header("🛒 要発注状況")
 if len(low_stock_df) > 0:
@@ -349,7 +394,7 @@ if st.sidebar.button("＋ カテゴリ追加"):
         st.rerun()
 
 # ---------------------------------------------------------
-# 5. メインコンテンツ (カテゴリ別タブ表示)
+# 6. メインコンテンツ (カテゴリ別タブ表示)
 # ---------------------------------------------------------
 categories = list(df["タブ名"].unique())
 if not categories:
