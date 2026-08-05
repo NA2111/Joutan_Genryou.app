@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 # ---------------------------------------------------------
-# 1. ページ基本設定 (スマホ＆PC最適化・モダンUI)
+# 1. ページ基本設定 ＆ タイムゾーン設定 (日本時間 JST: UTC+9)
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="SDS・素材原料管理PRO",
@@ -18,6 +18,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+JST = datetime.timezone(datetime.timedelta(hours=9))
+
+def get_jst_now(fmt="%Y-%m-%d %H:%M"):
+    """常に日本時間（JST）で現在日時を返す関数"""
+    return datetime.datetime.now(JST).strftime(fmt)
 
 # 保存用ファイル・フォルダ設定
 CSV_FILE = "sds_inventory_tabs.csv"
@@ -92,7 +98,7 @@ def send_email_notification(smtp_user, smtp_password, to_emails, subject, body):
 
 def load_data():
     if not os.path.exists(CSV_FILE):
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        now = get_jst_now()
         cols = [
             "タブ名", "品名", "在庫数", "発注点", "単位", "更新日時",
             "保管場所", "安全区分", "SDSファイル", "ロット番号", "使用期限", "検索タグ", "備考", "メッセージ",
@@ -131,7 +137,7 @@ def save_data(df):
 
 
 def add_log(category, item_name, action, detail=""):
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = get_jst_now("%Y-%m-%d %H:%M:%S")
     log_entry = pd.DataFrame(
         [[now, category, item_name, action, detail]],
         columns=["日時", "カテゴリ", "品名", "操作内容", "詳細"],
@@ -161,7 +167,7 @@ def check_expiry(date_str):
         return "✅ 登録なし"
     try:
         expiry_date = datetime.datetime.strptime(str(date_str).strip(), "%Y-%m-%d").date()
-        today = datetime.date.today()
+        today = datetime.datetime.now(JST).date()
         days_left = (expiry_date - today).days
         if days_left < 0:
             return "❌ 期限切れ"
@@ -174,7 +180,7 @@ def check_expiry(date_str):
 
 
 def process_auto_arrival(df):
-    today = datetime.date.today()
+    today = datetime.datetime.now(JST).date()
     updated = False
     for idx, row in df.iterrows():
         arr_date_str = str(row.get("入荷予定日", "")).strip()
@@ -188,7 +194,7 @@ def process_auto_arrival(df):
                     df.at[idx, "在庫数"] += add_qty
                     df.at[idx, "入荷予定日"] = ""
                     df.at[idx, "入荷予定数"] = 0
-                    df.at[idx, "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    df.at[idx, "更新日時"] = get_jst_now()
                     
                     add_log(row["タブ名"], item_name, "自動入庫", f"取り寄せ分 {add_qty}{row['単位']} を追加")
                     updated = True
@@ -240,7 +246,7 @@ if len(low_stock_df) > 0:
     st.sidebar.download_button(
         label="📄 発注依頼用CSVを出力",
         data=order_csv,
-        file_name=f"発注依頼書_{datetime.datetime.now().strftime('%Y%m%d')}.csv",
+        file_name=f"発注依頼書_{get_jst_now('%Y%m%d')}.csv",
         mime="text/csv",
     )
 else:
@@ -305,7 +311,7 @@ st.sidebar.header("🏷️ カテゴリ管理")
 new_cat = st.sidebar.text_input("新しいカテゴリ名")
 if st.sidebar.button("＋ カテゴリ追加"):
     if new_cat and new_cat not in df["タブ名"].unique():
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        now = get_jst_now()
         new_row = pd.DataFrame(
             [[new_cat, "サンプル原料", 1, 1, "個", now, "", "指定なし 📦", "", "LOT-000", "", "", "初期アイテム", "", "", 0]],
             columns=[c for c in df.columns if c != "期限状態"],
@@ -395,13 +401,13 @@ for i, cat in enumerate(categories):
         if select_key not in st.session_state and item_list:
             st.session_state[select_key] = item_list[0]
 
-        # ★ オンライン直接編集対応 (エラー原因となった不要な引数を削除)
+        # オンライン直接編集対応
         edited_display_df = st.data_editor(
             display_df[show_cols],
             use_container_width=True,
             hide_index=True,
             key=f"df_editor_{cat}",
-            disabled=["ステータス", "期限状態", "入荷予定", "添付", "更新日時"],  # 自動計算列は編集不可
+            disabled=["ステータス", "期限状態", "入荷予定", "添付", "更新日時"],
             column_config={
                 "在庫数": st.column_config.NumberColumn("在庫数", min_value=0, step=1, format="%d"),
                 "品名": st.column_config.TextColumn("品名", required=True),
@@ -409,7 +415,7 @@ for i, cat in enumerate(categories):
             }
         )
 
-        # 表のインライン編集の変更検知＆自動保存
+        # 表のインライン編集の変更検知＆自動保存（日本時間）
         if not edited_display_df.equals(display_df[show_cols]):
             for row_i, edited_row in edited_display_df.iterrows():
                 orig_row = display_df.iloc[row_i]
@@ -425,7 +431,7 @@ for i, cat in enumerate(categories):
                         df.loc[idx[0], "保管場所"] = str(edited_row["保管場所"]).strip()
                         df.loc[idx[0], "備考"] = str(edited_row["備考"]).strip()
                         df.loc[idx[0], "安全区分"] = str(edited_row["安全区分"])
-                        df.loc[idx[0], "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                        df.loc[idx[0], "更新日時"] = get_jst_now()
                         
                         save_data(df)
                         st.toast(f"「{edited_row['品名']}」の変更を保存しました！")
@@ -486,7 +492,7 @@ for i, cat in enumerate(categories):
                     idx = df[(df["タブ名"] == cat) & (df["品名"] == selected_item)].index
                     if not idx.empty:
                         df.loc[idx, "在庫数"] += change_qty
-                        df.loc[idx, "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                        df.loc[idx, "更新日時"] = get_jst_now()
                         save_data(df)
                         st.toast(f"「{selected_item}」に {change_qty} {unit_str} 追加しました！")
                         st.rerun()
@@ -497,7 +503,7 @@ for i, cat in enumerate(categories):
                         current_qty = df.loc[idx[0], "在庫数"]
                         if current_qty >= change_qty:
                             df.loc[idx, "在庫数"] -= change_qty
-                            df.loc[idx, "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                            df.loc[idx, "更新日時"] = get_jst_now()
                             save_data(df)
                             st.toast(f"「{selected_item}」を {change_qty} {unit_str} 使用しました！")
                             st.rerun()
@@ -525,7 +531,7 @@ for i, cat in enumerate(categories):
                         df.loc[idx, "在庫数"] += add_qty
                         df.loc[idx, "入荷予定日"] = ""
                         df.loc[idx, "入荷予定数"] = 0
-                        df.loc[idx, "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                        df.loc[idx, "更新日時"] = get_jst_now()
                         save_data(df)
                         add_log(cat, selected_item, "手動入荷", f"{add_qty}{curr_row['単位']} を追加")
                         st.success(f"{add_qty}{curr_row['単位']} を在庫に手動で追加しました！")
@@ -543,7 +549,7 @@ for i, cat in enumerate(categories):
                     with st.form(key=f"arrange_form_{cat}_{selected_item}"):
                         ac1, ac2 = st.columns(2)
                         arr_qty = ac1.number_input("取り寄せ予定数", min_value=1, value=int(curr_row["発注点"]) if curr_row["発注点"]>0 else 1)
-                        default_date = datetime.date.today() + datetime.timedelta(days=3)
+                        default_date = datetime.datetime.now(JST).date() + datetime.timedelta(days=3)
                         arr_dt = ac2.date_input("入荷予定日", value=default_date)
                         
                         if st.form_submit_button("取り寄せ手配を登録する"):
@@ -608,7 +614,7 @@ for i, cat in enumerate(categories):
                                 df.loc[idx[0], "SDSファイル"] = final_sds_path
                                 df.loc[idx[0], "保管場所"] = e_loc.strip()
                                 df.loc[idx[0], "備考"] = e_rem.strip()
-                                df.loc[idx[0], "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                                df.loc[idx[0], "更新日時"] = get_jst_now()
 
                                 save_data(df)
                                 st.session_state[f"next_select_{cat}"] = new_name_clean
@@ -648,7 +654,7 @@ for i, cat in enumerate(categories):
                             new_row = pd.DataFrame(
                                 [[
                                     cat, f_name.strip(), int(f_qty), int(f_min), f_unit, 
-                                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), 
+                                    get_jst_now(), 
                                     f_loc.strip(), f_safe, saved_path, f_lot.strip(), 
                                     f_exp.strftime("%Y-%m-%d") if f_exp else "", f_tags.strip(), f_rem.strip(), "", "", 0
                                 ]],
