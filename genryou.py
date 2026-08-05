@@ -395,13 +395,11 @@ for i, cat in enumerate(categories):
         if select_key not in st.session_state and item_list:
             st.session_state[select_key] = item_list[0]
 
-        # ★ オンライン直接編集対応 (st.data_editor)
+        # ★ オンライン直接編集対応 (エラー原因となった不要な引数を削除)
         edited_display_df = st.data_editor(
             display_df[show_cols],
             use_container_width=True,
             hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row",
             key=f"df_editor_{cat}",
             disabled=["ステータス", "期限状態", "入荷予定", "添付", "更新日時"],  # 自動計算列は編集不可
             column_config={
@@ -432,16 +430,6 @@ for i, cat in enumerate(categories):
                         save_data(df)
                         st.toast(f"「{edited_row['品名']}」の変更を保存しました！")
                         st.rerun()
-
-        # 行選択イベントの取得
-        editor_state = st.session_state.get(f"df_editor_{cat}", {})
-        selected_rows = editor_state.get("selection", {}).get("rows", [])
-        if selected_rows:
-            clicked_idx = selected_rows[0]
-            if clicked_idx < len(display_df):
-                clicked_item = display_df.iloc[clicked_idx]["品名"]
-                if clicked_item in item_list:
-                    st.session_state[select_key] = clicked_item
 
         st.markdown("---")
 
