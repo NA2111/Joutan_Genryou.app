@@ -29,7 +29,7 @@ def get_jst_now(fmt="%Y-%m-%d %H:%M"):
 CSV_FILE = "sds_inventory_tabs.csv"
 LOG_FILE = "sds_inventory_log.csv"
 MSG_FILE = "sds_global_message.txt"
-WEBHOOK_FILE = "sds_webhook_url.txt"
+WEBHOOKS_FILE = "sds_webhooks.json"
 SDS_DIR = "sds_files"
 
 os.makedirs(SDS_DIR, exist_ok=True)
@@ -56,16 +56,29 @@ def save_sds_file(uploaded_file, item_name):
     return file_path
 
 
-def load_webhook_url():
-    if os.path.exists(WEBHOOK_FILE):
-        with open(WEBHOOK_FILE, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    return ""
+def load_webhooks():
+    """登録済みWebhook辞書を読み込む（Secrets + ローカルJSON）"""
+    webhooks = {}
+    # 1. Streamlit Secrets に設定がある場合は優先読み込み
+    if "gchat_webhooks" in st.secrets:
+        for name, url in st.secrets["gchat_webhooks"].items():
+            webhooks[name] = str(url).strip()
+            
+    # 2. ローカル保存ファイルがあれば追加読み込み
+    if os.path.exists(WEBHOOKS_FILE):
+        try:
+            with open(WEBHOOKS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                webhooks.update(data)
+        except Exception:
+            pass
+    return webhooks
 
 
-def save_webhook_url(url):
-    with open(WEBHOOK_FILE, "w", encoding="utf-8") as f:
-        f.write(url.strip())
+def save_webhooks(webhooks_dict):
+    """Webhook辞書をJSON形式で保存"""
+    with open(WEBHOOKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(webhooks_dict, f, ensure_ascii=False, indent=2)
 
 
 def send_google_chat_notification(webhook_url, message_text):
@@ -235,7 +248,7 @@ c4.metric("📅 期限切れ/間近", f"{expired_items + near_expiry_items} 件"
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 4. サイドバー (要発注アラート・検索・通知・ログ)
+# 4. サイドバー (要発注・検索・通知・ログ)
 # ---------------------------------------------------------
 st.sidebar.header("🛒 要発注状況")
 if len(low_stock_df) > 0:
@@ -256,38 +269,61 @@ st.sidebar.markdown("---")
 st.sidebar.header("📢 アラート一括通知")
 
 alert_df = df[(df["在庫数"] <= df["発注点"]) | (df["期限状態"].str.contains("❌|⚠️", regex=True))]
+webhooks = load_webhooks()
+
 if len(alert_df) > 0:
     notify_method = st.sidebar.radio(
         "通知方法を選択", ["Google Chatスペースへ通知", "Gmail一括送信"]
     )
 
     if notify_method == "Google Chatスペースへ通知":
-        saved_url = load_webhook_url()
-        webhook_url = st.sidebar.text_input(
-            "Google Chat Webhook URL",
-            value=saved_url,
-            type="password",
-        )
-        if webhook_url.strip() != saved_url:
-            save_webhook_url(webhook_url.strip())
+        if webhooks:
+            webhook_name = st.sidebar.selectbox("🎯 通知先を選択", list(webhooks.keys()))
+            selected_url = webhooks[webhook_name]
+        else:
+            st.sidebar.info("💡 登録済みのWebhook URLがありません。下の「⚙️ Webhookの管理」から登録してください。")
+            selected_url = ""
 
         if st.sidebar.button("🔔 アラートを一括通知"):
-            if webhook_url.strip():
-                save_webhook_url(webhook_url.strip())
+            if selected_url.strip():
                 msg_lines = ["⚠️ **【原料・薬品アラート通知】**", ""]
                 for _, r in alert_df.iterrows():
                     msg_lines.append(f"・[{r['タブ名']}] {r['品名']} | 在庫:{r['在庫数']}{r['単位']} | 期限:{r['期限状態']}")
                 msg_lines.append("\n状況の確認および対応をお願いします！")
                 full_msg = "\n".join(msg_lines)
 
-                ok, res_msg = send_google_chat_notification(webhook_url.strip(), full_msg)
+                ok, res_msg = send_google_chat_notification(selected_url.strip(), full_msg)
                 if ok:
                     st.sidebar.success(res_msg)
-                    add_log("システム", "一括通知", "GoogleChat送信")
+                    add_log("システム", "一括通知", f"GoogleChat送信({webhook_name if webhooks else '直接入力'})")
                 else:
                     st.sidebar.error(res_msg)
             else:
-                st.sidebar.error("Webhook URLを入力してください。")
+                st.sidebar.error("Webhook URLを選択または登録してください。")
+
+        # ⚙️ Webhook URL登録・削除管理UI
+        with st.sidebar.expander("⚙️ Webhook URLの登録・削除"):
+            st.caption("よく使う通知先を名前を付けて保存・選択できます")
+            new_wh_name = st.text_input("通知先名", placeholder="例: 製造部チャネル")
+            new_wh_url = st.text_input("Webhook URL", type="password", placeholder="https://chat.googleapis.com/...")
+            
+            if st.button("➕ 新しく登録する"):
+                if new_wh_name.strip() and new_wh_url.strip():
+                    webhooks[new_wh_name.strip()] = new_wh_url.strip()
+                    save_webhooks(webhooks)
+                    st.success(f"「{new_wh_name.strip()}」を保存しました！")
+                    st.rerun()
+                else:
+                    st.error("名前とURLの両方を入力してください。")
+
+            if webhooks:
+                st.markdown("---")
+                del_target = st.selectbox("削除する登録名", list(webhooks.keys()), key="del_wh_target")
+                if st.button("🗑️ 登録を削除"):
+                    webhooks.pop(del_target, None)
+                    save_webhooks(webhooks)
+                    st.success(f"「{del_target}」を削除しました。")
+                    st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.header("📝 全体連絡メモ編集")
