@@ -235,20 +235,11 @@ c4.metric("📅 期限切れ/間近", f"{expired_items + near_expiry_items} 件"
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 4. サイドバー (発注リスト・検索・通知・ログ)
+# 4. サイドバー (要発注アラート・検索・通知・ログ)
 # ---------------------------------------------------------
-st.sidebar.header("🛒 発注用リスト自動抽出")
+st.sidebar.header("🛒 要発注状況")
 if len(low_stock_df) > 0:
     st.sidebar.warning(f"現在 **{len(low_stock_df)} 件** が発注点以下です！")
-    order_csv = low_stock_df[
-        ["タブ名", "品名", "ロット番号", "在庫数", "発注点", "単位", "保管場所", "備考"]
-    ].to_csv(index=False, encoding="shift-jis", errors="replace")
-    st.sidebar.download_button(
-        label="📄 発注依頼用CSVを出力",
-        data=order_csv,
-        file_name=f"発注依頼書_{get_jst_now('%Y%m%d')}.csv",
-        mime="text/csv",
-    )
 else:
     st.sidebar.success("現在、発注が必要な品目はありません。")
 
