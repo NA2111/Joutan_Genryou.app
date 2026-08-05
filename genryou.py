@@ -376,7 +376,7 @@ for i, cat in enumerate(categories):
             filtered_df = filtered_df[filtered_df["添付"] != "-"]
 
         st.subheader(f"「{cat}」の一覧")
-        st.caption("👇 表の行（添付ありの品目など）をタップ・選択すると、すぐ下にファイルや操作メニューが表示されます")
+        st.caption("✏️ **セル（品名・在庫数・単位など）をダブルクリックするとその場で直接編集できます！**")
 
         display_df = (filtered_df if not filtered_df.empty else cat_df).reset_index(drop=True)
 
@@ -389,28 +389,53 @@ for i, cat in enumerate(categories):
         select_key = f"select_box_{cat}"
         next_key = f"next_select_{cat}"
 
-        # 次回再描画用の選択品目予約があれば、描画前にセット（エラー防止）
         if next_key in st.session_state:
             st.session_state[select_key] = st.session_state.pop(next_key)
 
         if select_key not in st.session_state and item_list:
             st.session_state[select_key] = item_list[0]
 
-        event = st.dataframe(
+        # ★ オンライン直接編集対応 (st.data_editor)
+        edited_display_df = st.data_editor(
             display_df[show_cols],
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
             selection_mode="single-row",
-            key=f"df_table_{cat}",
+            key=f"df_editor_{cat}",
+            disabled=["ステータス", "期限状態", "入荷予定", "添付", "更新日時"],  # 自動計算列は編集不可
             column_config={
-                "在庫数": st.column_config.ProgressColumn(
-                    "在庫数", format="%d", min_value=0, max_value=20
-                ),
+                "在庫数": st.column_config.NumberColumn("在庫数", min_value=0, step=1, format="%d"),
+                "品名": st.column_config.TextColumn("品名", required=True),
+                "単位": st.column_config.TextColumn("単位"),
             }
         )
 
-        selected_rows = event.selection.rows if event and hasattr(event, "selection") else []
+        # 表のインライン編集の変更検知＆自動保存
+        if not edited_display_df.equals(display_df[show_cols]):
+            for row_i, edited_row in edited_display_df.iterrows():
+                orig_row = display_df.iloc[row_i]
+                if not edited_row.equals(orig_row[show_cols]):
+                    orig_name = orig_row["品名"]
+                    idx = df[(df["タブ名"] == cat) & (df["品名"] == orig_name)].index
+                    if not idx.empty:
+                        df.loc[idx[0], "品名"] = str(edited_row["品名"]).strip()
+                        df.loc[idx[0], "在庫数"] = int(edited_row["在庫数"])
+                        df.loc[idx[0], "単位"] = str(edited_row["単位"]).strip()
+                        df.loc[idx[0], "ロット番号"] = str(edited_row["ロット番号"]).strip()
+                        df.loc[idx[0], "検索タグ"] = str(edited_row["検索タグ"]).strip()
+                        df.loc[idx[0], "保管場所"] = str(edited_row["保管場所"]).strip()
+                        df.loc[idx[0], "備考"] = str(edited_row["備考"]).strip()
+                        df.loc[idx[0], "安全区分"] = str(edited_row["安全区分"])
+                        df.loc[idx[0], "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                        
+                        save_data(df)
+                        st.toast(f"「{edited_row['品名']}」の変更を保存しました！")
+                        st.rerun()
+
+        # 行選択イベントの取得
+        editor_state = st.session_state.get(f"df_editor_{cat}", {})
+        selected_rows = editor_state.get("selection", {}).get("rows", [])
         if selected_rows:
             clicked_idx = selected_rows[0]
             if clicked_idx < len(display_df):
@@ -598,7 +623,6 @@ for i, cat in enumerate(categories):
                                 df.loc[idx[0], "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
                                 save_data(df)
-                                # 安全な更新用予約キーをセット（★ここを修正）
                                 st.session_state[f"next_select_{cat}"] = new_name_clean
                                 st.success(f"「{new_name_clean}」の情報を更新しました！")
                                 st.rerun()
