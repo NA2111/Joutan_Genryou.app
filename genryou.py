@@ -387,6 +387,11 @@ for i, cat in enumerate(categories):
 
         item_list = list(cat_df["品名"].unique())
         select_key = f"select_box_{cat}"
+        next_key = f"next_select_{cat}"
+
+        # 次回再描画用の選択品目予約があれば、描画前にセット（エラー防止）
+        if next_key in st.session_state:
+            st.session_state[select_key] = st.session_state.pop(next_key)
 
         if select_key not in st.session_state and item_list:
             st.session_state[select_key] = item_list[0]
@@ -593,7 +598,8 @@ for i, cat in enumerate(categories):
                                 df.loc[idx[0], "更新日時"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
                                 save_data(df)
-                                st.session_state[select_key] = new_name_clean
+                                # 安全な更新用予約キーをセット（★ここを修正）
+                                st.session_state[f"next_select_{cat}"] = new_name_clean
                                 st.success(f"「{new_name_clean}」の情報を更新しました！")
                                 st.rerun()
 
