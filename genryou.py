@@ -100,7 +100,7 @@ def load_webhooks():
     webhooks = {}
     if "gchat_webhooks" in st.secrets:
         for name, url in st.secrets["gchat_webhooks"].items():
-            if name != "APP_PASSWORD":  # パスワード項目は除外
+            if name != "APP_PASSWORD":
                 webhooks[name] = str(url).strip()
             
     if os.path.exists(WEBHOOKS_FILE):
@@ -293,7 +293,7 @@ c4.metric("📅 期限切れ/間近", f"{expired_items + near_expiry_items} 件"
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 5. サイドバー (要発注・検索・通知・ログ)
+# 5. サイドバー (要発注・検索・CSV出力・通知・ログ)
 # ---------------------------------------------------------
 st.sidebar.header("🛒 要発注状況")
 if len(low_stock_df) > 0:
@@ -310,6 +310,61 @@ status_filter = st.sidebar.radio(
     "状態絞り込み", ["すべて", "⚠️ 要発注のみ", "🚚 取り寄せ中", "📅 期限切れ/間近", "📄 添付ファイルあり"]
 )
 
+# ---------------------------------------------------------
+# ★ 複数選択CSV出力機能 (文字化け防止 utf-8-sig 対応)
+# ---------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.header("📄 複数選択CSV出力")
+
+with st.sidebar.expander("📊 品目を選んでCSVダウンロード"):
+    export_cat = st.selectbox(
+        "① 対象カテゴリ", 
+        ["すべてのカテゴリ"] + list(df["タブ名"].unique()), 
+        key="export_cat_select"
+    )
+
+    if export_cat == "すべてのカテゴリ":
+        export_target_df = df[df["品名"] != ""]
+    else:
+        export_target_df = df[(df["タブ名"] == export_cat) & (df["品名"] != "")]
+
+    all_export_items = list(export_target_df["品名"].unique())
+
+    selected_export_items = st.multiselect(
+        "② 出力する品目を選択 (複数可)",
+        options=all_export_items,
+        default=all_export_items,
+        key="export_items_multiselect"
+    )
+
+    if selected_export_items:
+        filtered_export_df = export_target_df[export_target_df["品名"].isin(selected_export_items)].copy()
+        
+        # CSV出力用カラム順の整頓
+        export_cols = [
+            "タブ名", "品名", "在庫数", "発注点", "単位", "更新日時",
+            "保管場所", "安全区分", "ロット番号", "使用期限", "期限状態", 
+            "検索タグ", "備考", "メッセージ", "入荷予定日", "入荷予定数"
+        ]
+        valid_cols = [c for c in export_cols if c in filtered_export_df.columns]
+        
+        # BOM付きUTF-8（utf-8-sig）でCSVデータ化（Excelで直接開いても文字化けしません）
+        csv_bytes = filtered_export_df[valid_cols].to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+
+        st.download_button(
+            label=f"📥 選択した {len(selected_export_items)} 件をCSV出力",
+            data=csv_bytes,
+            file_name=f"素材原料在庫_{get_jst_now('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    else:
+        st.caption("※品目を1つ以上選択してください")
+
+
+# ---------------------------------------------------------
+# アラート一括通知
+# ---------------------------------------------------------
 st.sidebar.markdown("---")
 st.sidebar.header("📢 アラート一括通知")
 
